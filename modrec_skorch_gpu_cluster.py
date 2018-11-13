@@ -12,18 +12,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import warnings
-warnings.filterwarnings("ignore")
+import pickle
 
-client = Client("127.0.0.1:8786")             # create local cluster
+
+warnings.filterwarnings("ignore")
 
 mods = ['BPSK', 'DQPSK', 'GFSK', 'GMSK', 'OQPSK',
         'PAM4', 'PAM8', 'PSK8', 'QAM16', 'QAM64', 'QPSK']
 class_num = len(mods)
-
-print("loading data")
-data = scipy.io.loadmat(
-    "D:/batch100000_symbols128_sps8_baud1_snr5.dat",
-)
 
 
 def import_from_mat(data, size):
@@ -42,20 +38,31 @@ def import_from_mat(data, size):
     return features, labels
 
 
-features, labels = import_from_mat(data, 100)
-features = features.astype(np.float32)
-labels = labels.astype(np.int64)
-X = features
-y = labels.reshape(-1)
+def load_data():
 
-# class_num = 10
-# X, y = make_classification(20, 2048, n_informative=class_num, random_state=0)
-# X = X.astype(np.float32)
-# y = y.astype(np.int64)
+    print("loading data")
+
+    data = scipy.io.loadmat(
+        "D:/batch100000_symbols128_sps8_baud1_snr5.dat",
+    )
+
+    # features, labels = import_from_mat(data, 1000)
+    # features = features.astype(np.float32)
+    # labels = labels.astype(np.int64)
+    # X = features
+    # y = labels.reshape(-1)
+
+    class_num = 10
+    X, y = make_classification(1000, 2048, n_informative=class_num, random_state=0)
+    X = X.astype(np.float32)
+    y = y.astype(np.int64)
+
+    return X, y
 
 
 class Discriminator(nn.Module):
-    """Define the model"""
+
+    print("Define the model")
 
     def __init__(self, dr=0.6):
         super(Discriminator, self).__init__()
@@ -93,34 +100,47 @@ class Discriminator(nn.Module):
         return x
 
 
-disc = Discriminator()
+def train():
+    disc = Discriminator()
 
-cp = Checkpoint(dirname='best')
-early_stop = EarlyStopping(patience=20)
-net = NeuralNetClassifier(
-    disc,
-    max_epochs=200,
-    lr=0.01,
-    device='cuda',
-    callbacks=[('best', cp),
-               ('early', early_stop)],
-    iterator_train__shuffle=True,
-    iterator_valid__shuffle=False
-)
-# net.set_params(callbacks__print_log=None)
+    cp = Checkpoint(dirname='best')
+    early_stop = EarlyStopping(patience=20)
+    net = NeuralNetClassifier(
+        disc,
+        max_epochs=200,
+        lr=0.01,
+        device='cuda',
+        callbacks=[('best', cp),
+                   ('early', early_stop)],
+        iterator_train__shuffle=True,
+        iterator_valid__shuffle=False
+    )
+    # net.set_params(callbacks__print_log=None)
 
-param_dist = {
-    'lr': [0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05],
-}
+    param_dist = {
+        'lr': [0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05],
+    }
 
-search = RandomizedSearchCV(net,
-                            param_dist,
-                            cv=3,
-                            n_iter=10,
-                            verbose=10,
-                            scoring='accuracy')
+    search = RandomizedSearchCV(net,
+                                param_dist,
+                                cv=3,
+                                n_iter=10,
+                                verbose=10,
+                                scoring='accuracy')
 
-with joblib.parallel_backend('dask'):
-    search.fit(X, y)
+    client = Client("127.0.0.1:8786")  # create local cluster
 
-joblib.dump(search, "search.m")
+    X, y = load_data()
+
+    with joblib.parallel_backend('dask'):
+        search.fit(X, y)
+
+    with open('result.pkl', 'wb') as f:
+        # pickle.dump({'best_estimator': search.best_estimator_,
+        #              'best_params': search.best_params_,
+        #              'best_score': search.best_score_}, f)
+        pickle.dump(search, f)
+
+
+if __name__ == "__main__":
+    train()
