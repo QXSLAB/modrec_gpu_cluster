@@ -2,7 +2,7 @@ from skorch import NeuralNetClassifier
 from skorch.callbacks import Checkpoint, EarlyStopping
 from sklearn.datasets import make_classification
 from sklearn.model_selection import GridSearchCV
-from sklearn.model_selection import RandomizedSearchCV
+from sklearn.model_selection import RandomizedSearchCV, StratifiedKFold
 from scipy.stats import norm
 from dask.distributed import Client
 from sklearn.externals import joblib
@@ -13,6 +13,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 import warnings
 import pickle
+#
+# import os
+# os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
 
 warnings.filterwarnings("ignore")
@@ -45,17 +48,19 @@ def load_data():
     data = scipy.io.loadmat(
         "D:/batch100000_symbols128_sps8_baud1_snr5.dat",
     )
+    features, labels = import_from_mat(data, 100000)
+    features = features.astype(np.float32)
+    labels = labels.astype(np.int64)
+    X = features
+    y = labels.reshape(-1)
 
-    # features, labels = import_from_mat(data, 1000)
-    # features = features.astype(np.float32)
-    # labels = labels.astype(np.int64)
-    # X = features
-    # y = labels.reshape(-1)
-
-    class_num = 10
-    X, y = make_classification(1000, 2048, n_informative=class_num, random_state=0)
-    X = X.astype(np.float32)
-    y = y.astype(np.int64)
+    # class_num = 10
+    # X, y = make_classification(100, 2048,
+    #                            n_informative=5,
+    #                            n_classes=class_num,
+    #                            random_state=0)
+    # X = X.astype(np.float32)
+    # y = y.astype(np.int64)
 
     return X, y
 
@@ -101,13 +106,14 @@ class Discriminator(nn.Module):
 
 
 def train():
+
     disc = Discriminator()
 
     cp = Checkpoint(dirname='best')
     early_stop = EarlyStopping(patience=20)
     net = NeuralNetClassifier(
         disc,
-        max_epochs=200,
+        max_epochs=1000,
         lr=0.01,
         device='cuda',
         callbacks=[('best', cp),
@@ -118,27 +124,26 @@ def train():
     # net.set_params(callbacks__print_log=None)
 
     param_dist = {
-        'lr': [0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05],
+        'lr': [0.001, 0.005, 0.01, 0.05],
     }
 
     search = RandomizedSearchCV(net,
                                 param_dist,
-                                cv=3,
-                                n_iter=10,
+                                cv=StratifiedKFold(n_splits=3),
+                                n_iter=4,
                                 verbose=10,
                                 scoring='accuracy')
 
-    client = Client("127.0.0.1:8786")  # create local cluster
-
     X, y = load_data()
+
+    # search.fit(X, y)
+
+    client = Client("127.0.0.1:8786")  # create local cluster
 
     with joblib.parallel_backend('dask'):
         search.fit(X, y)
 
     with open('result.pkl', 'wb') as f:
-        # pickle.dump({'best_estimator': search.best_estimator_,
-        #              'best_params': search.best_params_,
-        #              'best_score': search.best_score_}, f)
         pickle.dump(search, f)
 
 
