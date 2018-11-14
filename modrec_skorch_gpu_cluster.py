@@ -49,7 +49,7 @@ def load_data():
     data = scipy.io.loadmat(
         "D:/batch100000_symbols128_sps8_baud1_snr5.dat",
     )
-    features, labels = import_from_mat(data, 10000)
+    features, labels = import_from_mat(data, 100000)
     features = features.astype(np.float32)
     labels = labels.astype(np.int64)
     X = features
