@@ -1,11 +1,14 @@
 from skorch import NeuralNetClassifier
 from skorch.callbacks import Checkpoint, EarlyStopping
+from skorch.callbacks import EpochScoring, PrintLog
+from skorch.utils import data_from_dataset
 from sklearn.datasets import make_classification
 from sklearn.model_selection import GridSearchCV
 from sklearn.model_selection import RandomizedSearchCV, StratifiedKFold
 from scipy.stats import norm
 from dask.distributed import Client
 from sklearn.externals import joblib
+from sklearn.metrics import confusion_matrix
 import numpy as np
 import scipy.io
 import torch
@@ -46,7 +49,7 @@ def load_data():
     data = scipy.io.loadmat(
         "D:/batch100000_symbols128_sps8_baud1_snr5.dat",
     )
-    features, labels = import_from_mat(data, 100000)
+    features, labels = import_from_mat(data, 10000)
     features = features.astype(np.float32)
     labels = labels.astype(np.int64)
     X = features
@@ -111,6 +114,9 @@ class SaveBestParam(Checkpoint):
         self.best_model_dict = copy.deepcopy(
             net.module_.state_dict()
         )
+        self.best_confusion_matrix = copy.deepcopy(
+            net.history[-1, "confusion_matrix"]
+        )
 
 
 class StopRestore(EarlyStopping):
@@ -126,13 +132,29 @@ class StopRestore(EarlyStopping):
             self.misses_ = 0
             self.dynamic_threshold_ = self._calc_new_threshold(current_score)
         if self.misses_ == self.patience:
-            best_cp = net.get_params()['callbacks__best']
-            net.module_.load_state_dict(best_cp.best_model_dict)
             if net.verbose:
                 self._sink("Stopping since {} has not improved in the last "
                            "{} epochs.".format(self.monitor, self.patience),
                            verbose=net.verbose)
+
+            best_cp = net.get_params()['callbacks__best']
+            net.module_.load_state_dict(best_cp.best_model_dict)
+            print("Best Model State Restored")
+            print("Best Confusion Matrix:\n {0}".format(
+                best_cp.best_confusion_matrix))
+
             raise KeyboardInterrupt
+
+
+class Score_ConfusionMatrix(EpochScoring):
+    def on_epoch_end(self, net, dataset_train, dataset_valid, **kwargs):
+        EpochScoring.on_epoch_end(self, net, dataset_train, dataset_valid)
+
+        X_test, y_test = data_from_dataset(dataset_valid)
+        y_pred = net.predict(X_test)
+        cm = confusion_matrix(y_test, y_pred)
+        history = net.history
+        history.record("confusion_matrix", cm)
 
 
 def train():
@@ -140,7 +162,9 @@ def train():
     disc = Discriminator()
 
     cp = SaveBestParam(dirname='best')
-    early_stop = StopRestore(patience=10)
+    early_stop = StopRestore(patience=5)
+    score = Score_ConfusionMatrix(scoring="accuracy", lower_is_better=False)
+    pt = PrintLog(keys_ignored="confusion_matrix")
     net = NeuralNetClassifier(
         disc,
         max_epochs=100,
@@ -151,7 +175,8 @@ def train():
         iterator_train__shuffle=True,
         iterator_valid__shuffle=False
     )
-    # net.set_params(callbacks__print_log=None)
+    net.set_params(callbacks__valid_acc=score)
+    net.set_params(callbacks__print_log=pt)
 
     param_dist = {
         'lr': [0.05, 0.01, 0.005],
@@ -160,7 +185,7 @@ def train():
     search = RandomizedSearchCV(net,
                                 param_dist,
                                 cv=StratifiedKFold(n_splits=3),
-                                n_iter=4,
+                                n_iter=3,
                                 verbose=10,
                                 scoring='accuracy')
 
