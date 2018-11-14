@@ -13,9 +13,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import warnings
 import pickle
-#
-# import os
-# os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+import copy
 
 
 warnings.filterwarnings("ignore")
@@ -105,15 +103,47 @@ class Discriminator(nn.Module):
         return x
 
 
+class SaveBestParam(Checkpoint):
+
+    """Save best model state"""
+
+    def save_model(self, net):
+        self.best_model_dict = copy.deepcopy(
+            net.module_.state_dict()
+        )
+
+
+class StopRestore(EarlyStopping):
+
+    """Early Stop and Restore best module state"""
+
+    def on_epoch_end(self, net, **kwargs):
+        # super().on_epoch_end(net, **kwargs)
+        current_score = net.history[-1, self.monitor]
+        if not self._is_score_improved(current_score):
+            self.misses_ += 1
+        else:
+            self.misses_ = 0
+            self.dynamic_threshold_ = self._calc_new_threshold(current_score)
+        if self.misses_ == self.patience:
+            best_cp = net.get_params()['callbacks__best']
+            net.module_.load_state_dict(best_cp.best_model_dict)
+            if net.verbose:
+                self._sink("Stopping since {} has not improved in the last "
+                           "{} epochs.".format(self.monitor, self.patience),
+                           verbose=net.verbose)
+            raise KeyboardInterrupt
+
+
 def train():
 
     disc = Discriminator()
 
-    cp = Checkpoint(dirname='best')
-    early_stop = EarlyStopping(patience=20)
+    cp = SaveBestParam(dirname='best')
+    early_stop = StopRestore(patience=10)
     net = NeuralNetClassifier(
         disc,
-        max_epochs=1000,
+        max_epochs=100,
         lr=0.01,
         device='cuda',
         callbacks=[('best', cp),
@@ -124,7 +154,7 @@ def train():
     # net.set_params(callbacks__print_log=None)
 
     param_dist = {
-        'lr': [0.001, 0.005, 0.01, 0.05],
+        'lr': [0.05, 0.01, 0.005],
     }
 
     search = RandomizedSearchCV(net,
@@ -138,7 +168,7 @@ def train():
 
     # search.fit(X, y)
 
-    client = Client("127.0.0.1:8786")  # create local cluster
+    Client("127.0.0.1:8786")  # create local cluster
 
     with joblib.parallel_backend('dask'):
         search.fit(X, y)
